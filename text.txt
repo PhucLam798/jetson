@@ -1,8 +1,8 @@
 sudo apt update
 sudo apt install -y \
-  build-essential \
-  gfortran \
-  libatlas-base-dev \
-  libopenblas-dev \
-  liblapack-dev \
-  python3.6-dev
+  libjpeg8-dev \
+  libjpeg-dev \
+  libturbojpeg0-dev \
+  pkg-config
+
+ls /usr/include/jpeglib.h
