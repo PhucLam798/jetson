@@ -1,36 +1,58 @@
 import cv2
-import torch
 import numpy as np
 import time
+try:
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
+    print("Cảnh báo: onnxruntime không được cài đặt. Hãy cài: pip install onnxruntime")
 
 
-def init_midas(model_type: str = "MiDaS_small"):
-    """Khởi tạo model MiDaS và transform tương ứng."""
-    midas = torch.hub.load("intel-isl/MiDaS", model_type)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    midas.to(device).eval()
+def init_midas_onnx(model_path: str = None):
+    """Khởi tạo model MiDaS sử dụng ONNX (không cần torchvision)."""
+    if not ONNX_AVAILABLE:
+        raise RuntimeError("ONNX runtime không được cài đặt")
+    
+    # Nếu không có model path, thử tìm trong thư mục hiện tại
+    if model_path is None:
+        import os
+        if os.path.exists("model.onnx"):
+            model_path = "model.onnx"
+        elif os.path.exists("../model.onnx"):
+            model_path = "../model.onnx"
+        else:
+            raise FileNotFoundError("Không tìm thấy model.onnx. Vui lòng chỉ định đường dẫn model.")
+    
+    # Tạo ONNX session
+    session = ort.InferenceSession(model_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    input_name = session.get_inputs()[0].name
+    
+    return session, input_name
 
-    midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
-    transform = midas_transforms.small_transform
 
-    return midas, transform, device
-
-
-def compute_depth_map(frame, midas, transform, device):
-    """Tính depth map từ một frame BGR."""
+def compute_depth_map_onnx(frame, session, input_name):
+    """Tính depth map từ một frame BGR sử dụng ONNX."""
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    input_batch = transform(img).to(device)
-
-    with torch.no_grad():
-        prediction = midas(input_batch)
-        prediction = torch.nn.functional.interpolate(
-            prediction.unsqueeze(1),
-            size=img.shape[:2],
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze()
-
-    depth_map = prediction.cpu().numpy()
+    
+    # Resize về 384x384 (kích thước chuẩn MiDaS small)
+    h, w = img.shape[:2]
+    img_resized = cv2.resize(img, (384, 384))
+    
+    # Chuẩn hóa input (0-1)
+    img_normalized = img_resized.astype(np.float32) / 255.0
+    
+    # Chuyển sang format (1, 3, 384, 384)
+    input_tensor = np.transpose(img_normalized, (2, 0, 1))
+    input_tensor = np.expand_dims(input_tensor, 0)
+    
+    # Inference
+    outputs = session.run(None, {input_name: input_tensor})
+    prediction = outputs[0].squeeze()
+    
+    # Resize lại về kích thước gốc
+    depth_map = cv2.resize(prediction, (w, h))
+    
     return depth_map
 
 
@@ -105,8 +127,8 @@ def decide_avoidance_action(zone_means, depth_map):
 
 
 def main():
-    # 1. Load model & transform
-    midas, transform, device = init_midas()
+    # 1. Load model ONNX (không cần torch/torchvision)
+    session, input_name = init_midas_onnx()
 
     # 2. Load video/camera
     input_video_path = 0
@@ -116,7 +138,7 @@ def main():
         print("Không mở được video!")
         return
 
-    print("Đang chạy depth + chia 3 cột dọc...")
+    print("Đang chạy depth + chia 3 cột dọc (sử dụng ONNX, không cần torchvision)...")
 
     prev_time = time.time()
 
@@ -126,7 +148,7 @@ def main():
             break
 
         # 3. Tính depth map
-        depth_map = compute_depth_map(frame, midas, transform, device)
+        depth_map = compute_depth_map_onnx(frame, session, input_name)
 
         # 4. Chia 3 cột dọc bằng nhau
         depth_color, zone_means = draw_three_vertical_zones(depth_map)
