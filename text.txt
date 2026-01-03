@@ -4,3 +4,6 @@ pip install torch-1.10.0-cp36-cp36m-linux_aarch64.whl
 which python
 python -c "import sys; print(sys.path)"
 dpkg -l | grep numpy
+
+
+wget https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torch-1.10.0-cp36-cp36m-linux_aarch64.whl
