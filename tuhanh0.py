@@ -2,131 +2,144 @@ import serial
 import math
 import time
 
-# ================= SERIAL =================
-PORT = "COM3"
+# ================= SERIAL CONFIG =================
+PORT = "/dev/ttyUSB0"     # change to ttyACM0 if needed
 BAUD = 115200
 
-ser = serial.Serial(PORT, BAUD, timeout=0.1)
+ser = serial.Serial(PORT, BAUD, timeout=0.3)
 time.sleep(2)
 ser.reset_input_buffer()
 
-# ================= THAM SỐ =================
-DEADZONE = 3    # độ: dừng xoay
-CORRECT_ZONE = 8 # độ: giữ hướng khi chạy
-dF = dL = dR = scanL = scanR = 999
+# ================= PARAMETERS =================
+DEADZONE = 3.0
+CORRECT_ZONE = 8.0
 
+T_TO_P0  = 2.0
+T_0_TO_1 = 3.0
+T_1_TO_2 = 3.0
 
-T_TO_P0  = 2       # current -> point0
-T_0_TO_1 = 3        # point0 -> point1
-T_1_TO_2 = 3      # point1 -> point2
+# ================= MOTOR COMMANDS =================
+def turn_right():
+    ser.write(b"R\n")
 
-# ================= ĐIỀU KHIỂN =================
-def quay_phai():  ser.write(b"R\n")
-def quay_trai():  ser.write(b"L\n")
-def dung():       ser.write(b"S\n")
-def chay_thang(): ser.write(b"F\n")
+def turn_left():
+    ser.write(b"L\n")
 
-def tinh_bearing(lat_from, lon_from, lat_to, lon_to):
-    dy = (lat_to - lat_from) * 111194
-    dx = (lon_to - lon_from) * 111194 * math.cos(math.radians(lat_from))
-    b = math.degrees(math.atan2(dx, dy))
-    return b + 360 if b < 0 else b
+def stop():
+    ser.write(b"S\n")
 
-def bo_qua_30_mau():
-    cnt = 0
-    while cnt < 10:
+def forward():
+    ser.write(b"F\n")
+
+# ================= SERIAL READ =================
+def read_heading():
+    """Read compass heading, ignore ultrasonic lines"""
+    while True:
         line = ser.readline().decode(errors="ignore").strip()
         if not line:
             continue
-        try:
-            float(line)
-            cnt += 1
-        except ValueError:
+        if line.startswith("U:"):
             continue
-
-def xoay_toi_huong(bearing_target):
-    print(f"\n🎯 XOAY → {bearing_target:.1f}°")
-
-    # 🔴 BỎ 30 MẪU TRƯỚC KHI XOAY
-    bo_qua_30_mau()
-
-    while True:
         try:
-            heading = float(ser.readline().decode().strip())
+            return float(line)
         except:
             continue
 
+def flush_heading(n=10):
+    """Discard noisy heading samples"""
+    cnt = 0
+    while cnt < n:
+        line = ser.readline().decode(errors="ignore").strip()
+        try:
+            float(line)
+            cnt += 1
+        except:
+            continue
+
+# ================= BEARING =================
+def calc_bearing(lat1, lon1, lat2, lon2):
+    dy = (lat2 - lat1) * 111194.0
+    dx = (lon2 - lon1) * 111194.0 * math.cos(math.radians(lat1))
+    b = math.degrees(math.atan2(dx, dy))
+    return b + 360.0 if b < 0 else b
+
+# ================= ROTATE =================
+def rotate_to(bearing_target):
+    print(f"\nRotate to {bearing_target:.1f} deg")
+    flush_heading(10)
+
+    while True:
+        heading = read_heading()
         alpha = (bearing_target - heading + 180) % 360 - 180
+
         print(
-            f"XOAY | Heading:{heading:6.1f}° | Alpha:{alpha:+6.1f}°",
+            f"ROTATE | Heading:{heading:6.1f} | Error:{alpha:+6.1f}",
             end="\r"
         )
 
         if abs(alpha) < DEADZONE:
-            dung()
-            print("\n✅ ĐÚNG HƯỚNG")
+            stop()
+            print("\nAligned")
             break
         elif alpha > 0:
-            quay_phai()
+            turn_right()
         else:
-            quay_trai()
+            turn_left()
 
-        time.sleep(0.05)
+        time.sleep(0.07)
 
-def chay_giu_huong(bearing_target, run_time):
-    print(f"🚗 CHẠY {run_time}s + GIỮ HƯỚNG")
-
-    # 🔴 BỎ 30 MẪU TRƯỚC KHI CHẠY
-    bo_qua_30_mau()
+# ================= DRIVE WITH HEADING HOLD =================
+def drive_hold_heading(bearing_target, run_time):
+    print(f"\nDrive {run_time:.1f}s with heading hold")
+    flush_heading(10)
 
     t0 = time.time()
     while time.time() - t0 < run_time:
-        try:
-            heading = float(ser.readline().decode().strip())
-        except:
-            continue
-
+        heading = read_heading()
         alpha = (bearing_target - heading + 180) % 360 - 180
+
         print(
-            f"CHẠY | Heading:{heading:6.1f}° | Alpha:{alpha:+6.1f}°",
+            f"DRIVE | Heading:{heading:6.1f} | Error:{alpha:+6.1f}",
             end="\r"
         )
 
         if abs(alpha) <= CORRECT_ZONE:
-            chay_thang()
-        elif alpha > 2:
-            quay_phai()
-        elif alpha < -2:
-            quay_trai()
+            forward()
+        elif alpha > 0:
+            turn_right()
+        else:
+            turn_left()
 
-        time.sleep(0.05)
+        time.sleep(0.07)
 
-    dung()
-    print("\n⏹ DỪNG")
+    stop()
+    print("\nStop")
 
-
-# vị trí hiện tại
+# ================= ROUTE =================
 current_lat = 16.803050
 current_lon = 107.103311
 
-# các điểm trên vỉa hè
-points = [(16.80305557, 107.10332116), (16.80347684, 107.10308103), (16.80362197, 107.10339928)]
+points = [
+    (16.80305557, 107.10332116),
+    (16.80347684, 107.10308103),
+    (16.80362197, 107.10339928),
+]
 
-print("\n🚀 BẮT ĐẦU ĐIỀU KHIỂN ROBOT\n")
+print("\n=== AUTONOMOUS START ===")
 
-# current → point 0 
-bearing0 = tinh_bearing(current_lat, current_lon, *points[0])
-xoay_toi_huong(bearing0)
-chay_giu_huong(bearing0, T_TO_P0)
+# current -> point 0
+bearing0 = calc_bearing(current_lat, current_lon, *points[0])
+rotate_to(bearing0)
+drive_hold_heading(bearing0, T_TO_P0)
 
-# point 0 → point 1 
-bearing1 = tinh_bearing(*points[0], *points[1])
-xoay_toi_huong(bearing1)
-chay_giu_huong(bearing1, T_0_TO_1)
+# point 0 -> point 1
+bearing1 = calc_bearing(*points[0], *points[1])
+rotate_to(bearing1)
+drive_hold_heading(bearing1, T_0_TO_1)
 
-#  point 1 → point 2 
-bearing2 = tinh_bearing(*points[1], *points[2])
-xoay_toi_huong(bearing2)
-chay_giu_huong(bearing2, T_1_TO_2)
+# point 1 -> point 2
+bearing2 = calc_bearing(*points[1], *points[2])
+rotate_to(bearing2)
+drive_hold_heading(bearing2, T_1_TO_2)
 
-print("\n🏁 HOÀN TẤT LỘ TRÌNH")
+print("\n=== ROUTE COMPLETE ===")
